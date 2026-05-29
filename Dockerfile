@@ -10,6 +10,8 @@ RUN corepack enable && corepack prepare pnpm@10.10.0 --activate
 FROM base AS deps
 WORKDIR /app
 
+RUN apk add --no-cache python3 make g++
+
 # 复制依赖清单
 COPY package.json pnpm-lock.yaml ./
 
@@ -40,7 +42,8 @@ ENV HOSTNAME="0.0.0.0"
 ENV PORT=3000
 
 # 创建非 root 用户
-RUN addgroup --system --gid 1001 nodejs && \
+RUN apk add --no-cache libstdc++ && \
+    addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
 
 # 复制 standalone 构建产物
