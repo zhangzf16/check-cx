@@ -100,6 +100,28 @@ pnpm lint   # 代码检查
 
 ## 配置说明
 
+### 后台维护入口
+
+访问 `/admin` 可维护 `check_configs`、`check_models`、`check_request_templates`、`group_info`、`system_notifications`。
+
+先生成密码 MD5，再写入环境变量：
+
+```bash
+pnpm admin:hash -- your-password
+```
+
+```env
+ADMIN_PASSWORD_HASH=5f4dcc3b5aa765d61d8327deb882cf99
+```
+
+也可以直接填其他工具已生成好的 32 位 MD5：
+
+```env
+ADMIN_PASSWORD_HASH=5f4dcc3b5aa765d61d8327deb882cf99
+```
+
+未配置 `ADMIN_PASSWORD_HASH` 时，后台维护入口不可登录。编辑检测配置时，API Key 留空表示保留原密钥。
+
 ### 环境变量
 
 | 变量                                       | 必需 | 默认值     | 说明                          |
@@ -112,6 +134,7 @@ pnpm lint   # 代码检查
 | `CHECK_CONCURRENCY`                      | 否  | `5`     | 最大并发（1–20）                  |
 | `OFFICIAL_STATUS_CHECK_INTERVAL_SECONDS` | 否  | `300`   | 官方状态轮询间隔（60–3600 秒）         |
 | `HISTORY_RETENTION_DAYS`                 | 否  | `30`    | 历史保留天数（7–365）               |
+| `ADMIN_PASSWORD_HASH`                    | 否  | -       | `/admin` 维护入口密码 MD5             |
 
 ### Provider 配置要点
 

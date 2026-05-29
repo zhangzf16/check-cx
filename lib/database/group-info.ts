@@ -32,6 +32,11 @@ export function resetGroupInfoCacheMetrics(): void {
   metrics.misses = 0;
 }
 
+export function invalidateGroupInfoCache(): void {
+  cache.data = [];
+  cache.lastFetchedAt = 0;
+}
+
 /**
  * 加载所有分组信息
  */

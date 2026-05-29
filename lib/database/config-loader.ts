@@ -54,6 +54,11 @@ export function resetConfigCacheMetrics(): void {
   metrics.misses = 0;
 }
 
+export function invalidateProviderConfigCache(): void {
+  cache.data = [];
+  cache.lastFetchedAt = 0;
+}
+
 function normalizeJsonRecord(value: unknown): JsonRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;

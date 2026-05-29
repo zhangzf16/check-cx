@@ -6,6 +6,7 @@
     "dev": "node scripts/dev.mjs",
     "build": "next build",
     "start": "next start",
+    "admin:hash": "node scripts/hash-admin-password.mjs",
     "lint": "eslint"
   },
   "dependencies": {
