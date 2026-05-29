@@ -98,6 +98,10 @@ interface AuthState {
   authenticated: boolean;
 }
 
+interface ClearHistoryResult {
+  deletedCount: number;
+}
+
 const EMPTY_DATA: AdminData = {
   templates: [],
   models: [],
@@ -410,6 +414,24 @@ export function AdminConsole() {
     }
   }
 
+  async function clearHistoryRecords() {
+    if (!window.confirm("确认删除所有检测记录并重新开始？检测配置、模型、分组和通知会保留。")) {
+      return;
+    }
+    setIsBusy(true);
+    setMessage(null);
+    try {
+      const result = await fetchJson<ClearHistoryResult>("/api/admin/history", {
+        method: "DELETE",
+      });
+      setMessage(`已删除 ${result.deletedCount} 条检测记录，新的检测会从空历史重新开始`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "清空检测记录失败");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function save(event: FormEvent) {
     event.preventDefault();
     setIsBusy(true);
@@ -541,6 +563,10 @@ export function AdminConsole() {
           >
             <RefreshCwIcon data-icon="inline-start" />
             刷新
+          </Button>
+          <Button disabled={isBusy} type="button" variant="destructive" onClick={clearHistoryRecords}>
+            <Trash2Icon data-icon="inline-start" />
+            清空检测记录
           </Button>
           <Button disabled={isBusy} type="button" variant="outline" onClick={logout}>
             <LogOutIcon data-icon="inline-start" />

@@ -118,6 +118,16 @@ class SnapshotStore {
       logError("清理历史记录失败", error);
     }
   }
+
+  clear(): number {
+    try {
+      const result = getSqliteDb().prepare("DELETE FROM check_history").run();
+      return Number(result.changes ?? 0);
+    } catch (error) {
+      logError("清空历史记录失败", error);
+      throw error;
+    }
+  }
 }
 
 export const historySnapshotStore = new SnapshotStore();
@@ -139,6 +149,10 @@ export async function appendHistory(
 ): Promise<HistorySnapshot> {
   await historySnapshotStore.append(results);
   return historySnapshotStore.fetch();
+}
+
+export function clearHistory(): number {
+  return historySnapshotStore.clear();
 }
 
 function normalizeAllowedIds(

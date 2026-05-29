@@ -39,6 +39,11 @@ export function resetAvailabilityCacheMetrics(): void {
   metrics.misses = 0;
 }
 
+export function clearAvailabilityStatsCache(): void {
+  cache.data = {};
+  cache.lastFetchedAt = 0;
+}
+
 function normalizeIds(ids?: Iterable<string> | null): string[] | null {
   if (!ids) {
     return null;
