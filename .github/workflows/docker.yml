@@ -32,6 +32,7 @@ jobs:
           images: ${{ secrets.DOCKER_USERNAME }}/check-cx
           tags: |
             type=semver,pattern={{version}}
+            type=raw,value=latest
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
