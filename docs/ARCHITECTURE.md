@@ -7,8 +7,8 @@
 Check CX 由三部分组成：
 
 1. **Next.js App Router**：提供 Dashboard 页面与 API 路由。
-2. **后台轮询器**：定时执行健康检查，写入 Supabase。
-3. **Supabase 数据层**：存储配置、历史与统计视图。
+2. **后台轮询器**：定时执行健康检查，写入 SQLite。
+3. **SQLite 数据层**：存储配置、历史与运行时租约。
 
 核心数据流：
 
@@ -30,10 +30,10 @@ check_request_templates + check_models + check_configs → 轮询器 → check_h
   - `lib/core/poller-leadership.ts`：通过数据库租约选主，保证多节点仅一台执行轮询。
   - `lib/core/official-status-poller.ts`：轮询官方状态并缓存。
 
-- **Supabase**
+- **SQLite**
   - 表：`check_models`、`check_configs`、`check_request_templates`、`check_history`、`group_info`、`system_notifications`、`check_poller_leases`。
-  - 视图：`availability_stats`（7/15/30 天可用性统计）。
-  - RPC：`get_recent_check_history`、`prune_check_history`。
+  - 应用启动时自动建表。
+  - 可用性统计由应用查询 `check_history` 实时聚合。
 
 ## 3. 关键数据流
 
@@ -98,4 +98,4 @@ check_request_templates + check_models + check_configs → 轮询器 → check_h
 - `check_configs.model_id` 关联的模型类型必须与 `check_configs.type` 一致。
 - `is_maintenance = true` 会保留卡片并返回 `maintenance` 状态，但不执行实际检查。
 - 运行时请求参数按 `template < model < config` 合并。
-- 若 RPC/视图未安装，聚合层会回退到简单查询，性能下降，应优先补齐迁移。
+   - SQLite 数据库文件默认位于 `data/check-cx.sqlite`，可通过 `SQLITE_DB_PATH` 覆盖。

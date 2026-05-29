@@ -9,9 +9,9 @@
 
 ### 1.1 数据库枚举与 Schema
 
-`check_configs.type` 使用 Supabase 枚举 `provider_type`。新增 Provider 必须更新数据库：
+`check_configs.type` 使用 SQLite CHECK 约束限制取值。新增 Provider 必须更新数据库建表逻辑：
 
-- `supabase/schema.sql` 与 `supabase/schema-dev.sql`
+- `lib/database/sqlite.ts`
 - 新建迁移：`ALTER TYPE public.provider_type ADD VALUE ...`（dev schema 同步）
 
 ### 1.2 类型与 UI 标识

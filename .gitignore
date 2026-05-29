@@ -46,6 +46,8 @@ next-env.d.ts
 
 combined.log
 error.log
+data/*.sqlite
+data/*.sqlite-*
 
 .playwright-mcp
 .mcp.json

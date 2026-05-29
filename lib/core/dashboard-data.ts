@@ -2,7 +2,7 @@
  * Dashboard 数据聚合模块
  *
  * 职责：
- * - 从 Supabase 读取最近的检查历史（按 Provider 聚合）
+ * - 从 SQLite 读取最近的检查历史（按 Provider 聚合）
  * - 在必要时触发一次新的 Provider 检测并写入历史
  * - 结合轮询配置与官方状态，生成 DashboardView 所需的完整数据结构
  */

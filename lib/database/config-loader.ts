@@ -3,10 +3,9 @@
  */
 
 import "server-only";
-import {createAdminClient} from "../supabase/admin";
+import {getSqliteDb} from "./sqlite";
 import {getPollingIntervalMs} from "../core/polling-config";
-import type {CheckConfigRow, ProviderConfig, ProviderType} from "../types";
-import type {CheckModelRow, CheckRequestTemplateRow} from "../types/database";
+import type {ProviderConfig, ProviderType} from "../types";
 import {logError} from "../utils";
 
 interface ConfigCache {
@@ -20,16 +19,21 @@ interface ConfigCacheMetrics {
 }
 
 type JsonRecord = Record<string, unknown>;
-type TemplateProjection = Pick<CheckRequestTemplateRow, "type" | "request_header" | "metadata">;
-type ModelProjection = Pick<CheckModelRow, "id" | "type" | "model" | "template_id"> & {
-  check_request_templates?: TemplateProjection | TemplateProjection[] | null;
-};
-type ConfigRowWithModel = Pick<
-  CheckConfigRow,
-  "id" | "name" | "type" | "model_id" | "endpoint" | "api_key" | "is_maintenance" | "group_name"
-> & {
-  check_models?: ModelProjection | ModelProjection[] | null;
-};
+
+interface ConfigRowWithModel {
+  id: string;
+  name: string;
+  type: string;
+  endpoint: string;
+  api_key: string;
+  is_maintenance: number;
+  group_name: string | null;
+  model: string | null;
+  model_type: string | null;
+  template_type: string | null;
+  request_header: string | null;
+  metadata: string | null;
+}
 
 const cache: ConfigCache = {
   data: [],
@@ -57,29 +61,15 @@ function normalizeJsonRecord(value: unknown): JsonRecord | null {
   return value as JsonRecord;
 }
 
-function getModel(row: ConfigRowWithModel): ModelProjection | null {
-  const model = Array.isArray(row.check_models)
-    ? row.check_models[0]
-    : row.check_models;
-
-  if (!model || model.type !== row.type) {
+function parseJsonRecord(value: string | null): JsonRecord | null {
+  if (!value) {
     return null;
   }
-
-  return model;
-}
-
-function getTemplateFromModel(row: ConfigRowWithModel): TemplateProjection | null {
-  const model = getModel(row);
-  const template = Array.isArray(model?.check_request_templates)
-    ? model.check_request_templates[0]
-    : model?.check_request_templates;
-
-  if (!template || template.type !== row.type) {
+  try {
+    return normalizeJsonRecord(JSON.parse(value));
+  } catch {
     return null;
   }
-
-  return template;
 }
 
 /**
@@ -98,21 +88,33 @@ export async function loadProviderConfigsFromDB(options?: {
     }
     metrics.misses += 1;
 
-    const supabase = createAdminClient();
-    const { data, error } = await supabase
-      .from("check_configs")
-      .select(
-        "id, name, type, model_id, endpoint, api_key, is_maintenance, group_name, check_models(id, type, model, template_id, check_request_templates(type, request_header, metadata))"
+    const db = getSqliteDb();
+    const data = db
+      .prepare(
+        `
+        SELECT
+          c.id,
+          c.name,
+          c.type,
+          c.endpoint,
+          c.api_key,
+          c.is_maintenance,
+          c.group_name,
+          m.model,
+          m.type AS model_type,
+          t.type AS template_type,
+          t.request_header,
+          t.metadata
+        FROM check_configs c
+        JOIN check_models m ON m.id = c.model_id
+        LEFT JOIN check_request_templates t ON t.id = m.template_id
+        WHERE c.enabled = 1
+        ORDER BY c.id
+        `
       )
-      .eq("enabled", true)
-      .order("id");
+      .all() as ConfigRowWithModel[];
 
-    if (error) {
-      logError("从数据库加载配置失败", error);
-      return [];
-    }
-
-    if (!data || data.length === 0) {
+    if (data.length === 0) {
       console.warn("[check-cx] 数据库中没有找到启用的配置");
       cache.data = [];
       cache.lastFetchedAt = now;
@@ -121,19 +123,21 @@ export async function loadProviderConfigsFromDB(options?: {
 
     const configs: ProviderConfig[] = data.map(
       (row: ConfigRowWithModel) => {
-        const model = getModel(row);
-        const template = getTemplateFromModel(row);
-        const mergedRequestHeaders = normalizeJsonRecord(template?.request_header) as Record<string, string> | null;
-        const mergedMetadata = normalizeJsonRecord(template?.metadata);
+        const model = row.model_type === row.type ? row.model : "";
+        const templateMatches = row.template_type === null || row.template_type === row.type;
+        const mergedRequestHeaders = templateMatches
+          ? (parseJsonRecord(row.request_header) as Record<string, string> | null)
+          : null;
+        const mergedMetadata = templateMatches ? parseJsonRecord(row.metadata) : null;
 
         return {
           id: row.id,
           name: row.name,
           type: row.type as ProviderType,
           endpoint: row.endpoint,
-          model: model?.model ?? "",
+          model: model ?? "",
           apiKey: row.api_key,
-          is_maintenance: row.is_maintenance,
+          is_maintenance: Boolean(row.is_maintenance),
           requestHeaders: mergedRequestHeaders,
           metadata: mergedMetadata,
           groupName: row.group_name || null,

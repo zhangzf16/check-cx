@@ -3,8 +3,7 @@
  */
 
 import "server-only";
-import type {PostgrestError} from "@supabase/supabase-js";
-import {createAdminClient} from "../supabase/admin";
+import {getSqliteDb} from "./sqlite";
 import type {CheckResult, HistorySnapshot} from "../types";
 import {logError} from "../utils";
 
@@ -25,17 +24,12 @@ export const HISTORY_RETENTION_DAYS = (() => {
   return DEFAULT_RETENTION_DAYS;
 })();
 
-const RPC_RECENT_HISTORY = "get_recent_check_history";
-const RPC_PRUNE_HISTORY = "prune_check_history";
-
-type AdminClient = ReturnType<typeof createAdminClient>;
-
 export interface HistoryQueryOptions {
   allowedIds?: Iterable<string> | null;
   limitPerConfig?: number;
 }
 
-interface RpcHistoryRow {
+interface HistoryRow {
   config_id: string;
   status: string;
   latency_ms: number | null;
@@ -49,15 +43,6 @@ interface RpcHistoryRow {
   group_name: string | null;
 }
 
-interface JoinedConfigRow {
-  id: string;
-  name: string;
-  type: string;
-  endpoint: string;
-  group_name: string | null;
-  check_models?: { model: string } | Array<{ model: string }> | null;
-}
-
 /**
  * SnapshotStore 负责与数据库交互，提供统一的读/写/清理接口
  */
@@ -68,25 +53,14 @@ class SnapshotStore {
       return {};
     }
 
-    const supabase = createAdminClient();
-    const limitPerConfig = options?.limitPerConfig ?? MAX_POINTS_PER_PROVIDER;
-    const { data, error } = await supabase.rpc(
-      RPC_RECENT_HISTORY,
-      {
-        limit_per_config: limitPerConfig,
-        target_config_ids: normalizedIds,
-      }
-    );
-
-    if (error) {
+    try {
+      const limitPerConfig = options?.limitPerConfig ?? MAX_POINTS_PER_PROVIDER;
+      const rows = fetchRows(normalizedIds, limitPerConfig);
+      return mapRowsToSnapshot(rows, limitPerConfig);
+    } catch (error) {
       logError("获取历史快照失败", error);
-      if (isMissingFunctionError(error)) {
-        return fallbackFetchSnapshot(supabase, normalizedIds);
-      }
       return {};
     }
-
-    return mapRowsToSnapshot(data as RpcHistoryRow[] | null, limitPerConfig);
   }
 
   async append(results: CheckResult[]): Promise<void> {
@@ -94,43 +68,54 @@ class SnapshotStore {
       return;
     }
 
-    const supabase = createAdminClient();
-    const records = results.map((result) => ({
-      config_id: result.id,
-      status: result.status,
-      latency_ms: result.latencyMs,
-      ping_latency_ms: result.pingLatencyMs,
-      checked_at: result.checkedAt,
-      message: result.message,
-    }));
+    try {
+      const db = getSqliteDb();
+      const insert = db.prepare(`
+        INSERT INTO check_history (
+          config_id,
+          status,
+          latency_ms,
+          ping_latency_ms,
+          checked_at,
+          message
+        )
+        VALUES (@config_id, @status, @latency_ms, @ping_latency_ms, @checked_at, @message)
+      `);
 
-    const { error } = await supabase.from("check_history").insert(records);
-    if (error) {
+      const insertMany = db.transaction((items: CheckResult[]) => {
+        for (const result of items) {
+          insert.run({
+            config_id: result.id,
+            status: result.status,
+            latency_ms: result.latencyMs,
+            ping_latency_ms: result.pingLatencyMs,
+            checked_at: result.checkedAt,
+            message: result.message,
+          });
+        }
+      });
+
+      insertMany(results);
+      await this.prune();
+    } catch (error) {
       logError("写入历史记录失败", error);
-      return;
     }
-
-    await this.pruneInternal(supabase);
   }
 
   async prune(retentionDays: number = HISTORY_RETENTION_DAYS): Promise<void> {
-    const supabase = createAdminClient();
-    await this.pruneInternal(supabase, retentionDays);
-  }
-
-  private async pruneInternal(
-    supabase: AdminClient,
-    retentionDays: number = HISTORY_RETENTION_DAYS
-  ): Promise<void> {
-    const { error } = await supabase.rpc(RPC_PRUNE_HISTORY, {
-      retention_days: retentionDays,
-    });
-
-    if (error) {
+    try {
+      const effectiveDays = Math.max(
+        MIN_RETENTION_DAYS,
+        Math.min(MAX_RETENTION_DAYS, retentionDays)
+      );
+      const cutoff = new Date(
+        Date.now() - effectiveDays * 24 * 60 * 60 * 1000
+      ).toISOString();
+      getSqliteDb()
+        .prepare("DELETE FROM check_history WHERE checked_at < ?")
+        .run(cutoff);
+    } catch (error) {
       logError("清理历史记录失败", error);
-      if (isMissingFunctionError(error)) {
-        await fallbackPruneHistory(supabase, retentionDays);
-      }
     }
   }
 }
@@ -166,8 +151,64 @@ function normalizeAllowedIds(
   return array.length > 0 ? array : [];
 }
 
+function fetchRows(
+  allowedIds: string[] | null,
+  limitPerConfig: number
+): HistoryRow[] {
+  const db = getSqliteDb();
+  const params: Record<string, string | number> = { limitPerConfig };
+  const idFilter = allowedIds
+    ? `WHERE h.config_id IN (${allowedIds
+        .map((_, index) => {
+          const key = `id${index}`;
+          params[key] = allowedIds[index];
+          return `@${key}`;
+        })
+        .join(", ")})`
+    : "";
+
+  return db
+    .prepare(
+      `
+      WITH ranked AS (
+        SELECT
+          h.config_id,
+          h.status,
+          h.latency_ms,
+          h.ping_latency_ms,
+          h.checked_at,
+          h.message,
+          row_number() OVER (
+            PARTITION BY h.config_id
+            ORDER BY h.checked_at DESC, h.id DESC
+          ) AS rn
+        FROM check_history h
+        ${idFilter}
+      )
+      SELECT
+        r.config_id,
+        r.status,
+        r.latency_ms,
+        r.ping_latency_ms,
+        r.checked_at,
+        r.message,
+        c.name,
+        c.type,
+        m.model,
+        c.endpoint,
+        c.group_name
+      FROM ranked r
+      JOIN check_configs c ON c.id = r.config_id
+      JOIN check_models m ON m.id = c.model_id
+      WHERE r.rn <= @limitPerConfig
+      ORDER BY c.name ASC, r.checked_at DESC
+      `
+    )
+    .all(params) as HistoryRow[];
+}
+
 function mapRowsToSnapshot(
-  rows: RpcHistoryRow[] | null,
+  rows: HistoryRow[] | null,
   limitPerConfig: number = MAX_POINTS_PER_PROVIDER
 ): HistorySnapshot {
   if (!rows || rows.length === 0) {
@@ -205,127 +246,4 @@ function mapRowsToSnapshot(
   }
 
   return history;
-}
-
-function isMissingFunctionError(error: PostgrestError | null): boolean {
-  if (!error?.message) {
-    return false;
-  }
-  return (
-    error.message.includes(RPC_RECENT_HISTORY) ||
-    error.message.includes(RPC_PRUNE_HISTORY)
-  );
-}
-
-async function fallbackFetchSnapshot(
-  supabase: AdminClient,
-  allowedIds: string[] | null
-): Promise<HistorySnapshot> {
-  try {
-    let query = supabase
-      .from("check_history")
-      .select(
-        `
-        id,
-        config_id,
-        status,
-        latency_ms,
-        ping_latency_ms,
-        checked_at,
-        message,
-        check_configs (
-          id,
-          name,
-          type,
-          endpoint,
-          group_name,
-          check_models (
-            model
-          )
-        )
-      `
-      )
-      .order("checked_at", { ascending: false });
-
-    if (allowedIds) {
-      query = query.in("config_id", allowedIds);
-    }
-
-    const { data, error } = await query;
-    if (error) {
-      logError("fallback 模式下读取历史失败", error);
-      return {};
-    }
-
-    const history: HistorySnapshot = {};
-    for (const record of data || []) {
-      const configs = record.check_configs;
-      if (!configs || !Array.isArray(configs) || configs.length === 0) {
-        continue;
-      }
-      const config = configs[0] as JoinedConfigRow;
-      const model = Array.isArray(config.check_models)
-        ? (config.check_models[0]?.model ?? "")
-        : (config.check_models?.model ?? "");
-
-      const result: CheckResult = {
-        id: config.id,
-        name: config.name,
-        type: config.type as CheckResult["type"],
-        endpoint: config.endpoint,
-        model,
-        status: record.status as CheckResult["status"],
-        latencyMs: record.latency_ms,
-        pingLatencyMs: record.ping_latency_ms ?? null,
-        checkedAt: record.checked_at,
-        message: record.message ?? "",
-        groupName: config.group_name ?? null,
-      };
-
-      if (!history[result.id]) {
-        history[result.id] = [];
-      }
-      history[result.id].push(result);
-    }
-
-    for (const key of Object.keys(history)) {
-      history[key] = history[key]
-        .sort(
-          (a, b) =>
-            new Date(b.checkedAt).getTime() - new Date(a.checkedAt).getTime()
-        )
-        .slice(0, MAX_POINTS_PER_PROVIDER);
-    }
-
-    return history;
-  } catch (error) {
-    logError("fallback 模式下读取历史异常", error);
-    return {};
-  }
-}
-
-async function fallbackPruneHistory(
-  supabase: AdminClient,
-  retentionDays: number
-): Promise<void> {
-  try {
-    const effectiveDays = Math.max(
-      MIN_RETENTION_DAYS,
-      Math.min(MAX_RETENTION_DAYS, retentionDays)
-    );
-    const cutoff = new Date(
-      Date.now() - effectiveDays * 24 * 60 * 60 * 1000
-    ).toISOString();
-
-    const { error: deleteError } = await supabase
-      .from("check_history")
-      .delete()
-      .lt("checked_at", cutoff);
-
-    if (deleteError) {
-      logError("fallback 模式下删除历史失败", deleteError);
-    }
-  } catch (error) {
-    logError("fallback 模式下清理历史异常", error);
-  }
 }

@@ -1,6 +1,6 @@
 /**
  * 数据库表类型定义
- * 对应 Supabase 的模型、配置与历史表
+ * 对应 SQLite 的模型、配置与历史表
  */
 
 /**
@@ -59,7 +59,7 @@ export interface CheckHistoryRow {
 }
 
 /**
- * availability_stats 视图的行类型
+ * 可用性统计聚合行类型
  */
 export interface AvailabilityStats {
   config_id: string;

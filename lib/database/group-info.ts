@@ -1,5 +1,5 @@
 import "server-only";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { getSqliteDb } from "@/lib/database/sqlite";
 import { getPollingIntervalMs } from "@/lib/core/polling-config";
 import type { GroupInfoRow } from "@/lib/types/database";
 
@@ -46,22 +46,24 @@ export async function loadGroupInfos(options?: {
   }
   metrics.misses += 1;
 
-  const supabase = createAdminClient();
+  try {
+    const rows = getSqliteDb()
+      .prepare(
+        `
+        SELECT id, group_name, website_url, tags, created_at, updated_at
+        FROM group_info
+        ORDER BY group_name ASC
+        `
+      )
+      .all() as GroupInfoRow[];
 
-  const { data, error } = await supabase
-    .from("group_info")
-    .select("*")
-    .order("group_name", { ascending: true });
-
-  if (error) {
+    cache.data = rows;
+    cache.lastFetchedAt = now;
+    return rows;
+  } catch (error) {
     console.error("Failed to load group info:", error);
     return [];
   }
-
-  const rows = (data as GroupInfoRow[]) ?? [];
-  cache.data = rows;
-  cache.lastFetchedAt = now;
-  return rows;
 }
 
 /**

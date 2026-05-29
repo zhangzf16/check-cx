@@ -4,7 +4,7 @@
 
 import "server-only";
 
-import {createAdminClient} from "../supabase/admin";
+import {getSqliteDb} from "./sqlite";
 import {getPollingIntervalMs} from "../core/polling-config";
 import type {AvailabilityStats} from "../types/database";
 import type {AvailabilityStat, AvailabilityStatsMap} from "../types";
@@ -106,21 +106,54 @@ export async function getAvailabilityStats(
   }
   metrics.misses += 1;
 
-  const supabase = createAdminClient();
-  const { data, error } = await supabase
-    .from("availability_stats")
-    .select("config_id, period, total_checks, operational_count, availability_pct")
-    .order("config_id", { ascending: true })
-    .order("period", { ascending: true });
+  try {
+    const data = queryAvailabilityStats(normalizedIds);
+    const mapped = mapRows(data);
+    cache.data = mapped;
+    cache.lastFetchedAt = now;
 
-  if (error) {
+    return filterStats(mapped, normalizedIds);
+  } catch (error) {
     logError("读取可用性统计失败", error);
     return {};
   }
+}
 
-  const mapped = mapRows(data as AvailabilityStats[] | null);
-  cache.data = mapped;
-  cache.lastFetchedAt = now;
+function queryAvailabilityStats(ids: string[] | null): AvailabilityStats[] {
+  const params: Record<string, string> = {};
+  const idFilter = ids
+    ? `AND config_id IN (${ids
+        .map((_, index) => {
+          const key = `id${index}`;
+          params[key] = ids[index];
+          return `@${key}`;
+        })
+        .join(", ")})`
+    : "";
 
-  return filterStats(mapped, normalizedIds);
+  return getSqliteDb()
+    .prepare(
+      `
+      WITH periods(period, days, sort_order) AS (
+        VALUES ('7d', 7, 1), ('15d', 15, 2), ('30d', 30, 3)
+      )
+      SELECT
+        h.config_id,
+        p.period,
+        COUNT(*) AS total_checks,
+        SUM(CASE WHEN h.status IN ('operational', 'degraded') THEN 1 ELSE 0 END) AS operational_count,
+        ROUND(
+          100.0 * SUM(CASE WHEN h.status IN ('operational', 'degraded') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+          2
+        ) AS availability_pct
+      FROM periods p
+      JOIN check_history h
+        ON julianday(h.checked_at) > julianday('now', '-' || p.days || ' days')
+      WHERE 1 = 1
+        ${idFilter}
+      GROUP BY h.config_id, p.period, p.sort_order
+      ORDER BY h.config_id ASC, p.sort_order ASC
+      `
+    )
+    .all(params) as AvailabilityStats[];
 }
